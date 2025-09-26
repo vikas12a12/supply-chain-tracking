@@ -1,0 +1,234 @@
+# app.py
+# Streamlit: Blockchain-based Supply Chain Tracker with full customer details
+# Run: streamlit run app.py
+
+import streamlit as st
+import hashlib
+import json
+import os
+import uuid
+from datetime import datetime
+
+CHAIN_FILE = "blockchain.json"
+USERS_FILE = "users.json"
+
+# Demo users
+DEFAULT_USERS = {
+    "farmer": {"password": "farmer123", "role": "Farmer", "name": "Farmer A"},
+    "wholesaler": {"password": "wholesaler123", "role": "Wholesaler", "name": "Wholesaler B"},
+    "distributor": {"password": "distributor123", "role": "Distributor", "name": "Distributor C"},
+    "retailer": {"password": "retailer123", "role": "Retailer", "name": "Retailer D"},
+    "customer": {"password": "customer123", "role": "Customer", "name": "Customer E"}
+}
+
+# ---------------- Blockchain Classes ----------------
+class Block:
+    def __init__(self, index, timestamp, product_id, actor_role, actor_name, location,
+                 status, payment_method, details, previous_hash):
+        self.index = index
+        self.timestamp = timestamp
+        self.product_id = product_id
+        self.actor_role = actor_role
+        self.actor_name = actor_name
+        self.location = location
+        self.status = status
+        self.payment_method = payment_method
+        self.details = details if details else {}
+        self.previous_hash = previous_hash
+        self.hash = self.compute_hash()
+
+    def compute_hash(self):
+        block_content = {
+            "index": self.index,
+            "timestamp": self.timestamp,
+            "product_id": self.product_id,
+            "actor_role": self.actor_role,
+            "actor_name": self.actor_name,
+            "location": self.location,
+            "status": self.status,
+            "payment_method": self.payment_method,
+            "details": self.details,
+            "previous_hash": self.previous_hash
+        }
+        block_string = json.dumps(block_content, sort_keys=True, separators=(',', ':')).encode()
+        return hashlib.sha256(block_string).hexdigest()
+
+    def to_dict(self):
+        return {
+            "index": self.index,
+            "timestamp": self.timestamp,
+            "product_id": self.product_id,
+            "actor_role": self.actor_role,
+            "actor_name": self.actor_name,
+            "location": self.location,
+            "status": self.status,
+            "payment_method": self.payment_method,
+            "details": self.details,
+            "previous_hash": self.previous_hash,
+            "hash": self.hash
+        }
+
+class Blockchain:
+    def __init__(self):
+        self.chain = []
+        if os.path.exists(CHAIN_FILE):
+            try:
+                self.load_from_file()
+            except Exception:
+                self.create_genesis_block()
+        else:
+            self.create_genesis_block()
+
+    def _now(self):
+        return datetime.utcnow().strftime("%Y-%m-%d %H:%M:%S")
+
+    def create_genesis_block(self):
+        genesis = Block(0, self._now(), "GENESIS", "Network", "Genesis", "N/A",
+                        "Genesis Block", "N/A", {"note": "Initial genesis block"}, "0")
+        genesis.hash = genesis.compute_hash()
+        self.chain = [genesis]
+        self.save_to_file()
+
+    def add_block(self, product_id, actor_role, actor_name, location, status, payment_method, details):
+        previous = self.chain[-1]
+        new_block = Block(len(self.chain), self._now(), product_id, actor_role, actor_name,
+                          location, status, payment_method, details, previous.hash)
+        new_block.hash = new_block.compute_hash()
+        self.chain.append(new_block)
+        self.save_to_file()
+        return new_block
+
+    def get_product_journey(self, product_id):
+        return [b.to_dict() for b in self.chain if b.product_id == product_id]
+
+    def save_to_file(self):
+        with open(CHAIN_FILE, "w") as f:
+            json.dump([b.to_dict() for b in self.chain], f, indent=2)
+
+    def load_from_file(self):
+        with open(CHAIN_FILE, "r") as f:
+            data = json.load(f)
+        self.chain = []
+        for item in data:
+            b = Block(item["index"], item["timestamp"], item["product_id"],
+                      item["actor_role"], item["actor_name"], item["location"],
+                      item["status"], item["payment_method"], item.get("details", {}),
+                      item["previous_hash"])
+            b.hash = item.get("hash", b.compute_hash())
+            self.chain.append(b)
+
+# ---------------- Users ----------------
+def ensure_users_file():
+    if not os.path.exists(USERS_FILE):
+        with open(USERS_FILE, "w") as f:
+            json.dump(DEFAULT_USERS, f, indent=2)
+
+def load_users():
+    ensure_users_file()
+    with open(USERS_FILE, "r") as f:
+        return json.load(f)
+
+# ---------------- Streamlit UI ----------------
+st.set_page_config(page_title="Blockchain Supply Chain Tracker", layout="wide")
+st.title("📦 Blockchain Supply Chain Tracker")
+
+bc = Blockchain()
+users = load_users()
+
+if "logged_in" not in st.session_state:
+    st.session_state.logged_in = False
+    st.session_state.user = None
+
+left_col, right_col = st.columns([3, 1])
+
+# ---------------- Login ----------------
+with right_col:
+    st.markdown("### 🔐 Login")
+    if not st.session_state.logged_in:
+        username = st.text_input("Username", key="login_username")
+        password = st.text_input("Password", type="password", key="login_password")
+        if st.button("Login", key="login_btn"):
+            if username in users and users[username]["password"] == password:
+                st.session_state.logged_in = True
+                st.session_state.user = {"username": username, **users[username]}
+                st.success(f"Logged in as {users[username]['role']}")
+            else:
+                st.error("Invalid credentials")
+    else:
+        st.write("**User:**", st.session_state.user.get("name"))
+        st.write("**Role:**", st.session_state.user.get("role"))
+        if st.button("Logout", key="logout_btn"):
+            st.session_state.logged_in = False
+            st.session_state.user = None
+            st.experimental_rerun()
+
+# ---------------- Actions ----------------
+with left_col:
+    actions_col, view_col = st.columns([1, 2])
+    with actions_col:
+        st.subheader("Actions")
+
+        # Farmer creates product
+        if st.session_state.logged_in and st.session_state.user["role"] == "Farmer":
+            st.markdown("**Create Product**")
+            new_pid = st.text_input("Product ID", value=f"PRD-{uuid.uuid4().hex[:6].upper()}", key="create_pid")
+            prod_name = st.text_input("Product Name", value="Mango", key="create_prod_name")
+            origin_loc = st.text_input("Origin Location", value="Amritsar, Punjab", key="create_origin")
+            if st.button("Create Product", key="create_product_btn"):
+                details = {"product_name": prod_name}
+                bc.add_block(new_pid.strip(), "Farmer", st.session_state.user["name"], origin_loc, "Created", "COD", details)
+                st.success(f"Product {new_pid} created!")
+
+        # Wholesaler / Distributor / Retailer update
+        if st.session_state.logged_in and st.session_state.user["role"] in ["Wholesaler","Distributor","Retailer"]:
+            st.markdown("**Update Product**")
+            t_pid = st.text_input("Product ID", key="update_pid")
+            t_loc = st.text_input("Location", key="update_loc")
+            t_status = st.selectbox("Status", ["Picked Up","In Transit","Received","Delivered"], key="update_status")
+            t_payment = st.selectbox("Payment Method", ["N/A","UPI","Credit Card","Cash on Delivery"], key="update_payment")
+            extra = st.text_area("Notes", key="update_notes")
+            if st.button("Record Update", key="update_btn"):
+                if t_pid.strip():
+                    bc.add_block(t_pid.strip(), st.session_state.user["role"], st.session_state.user["name"], t_loc, t_status, t_payment, {"notes": extra})
+                    st.success(f"Update recorded for {t_pid}")
+
+        # Customer details form
+        if st.session_state.logged_in and st.session_state.user["role"] == "Customer":
+            st.markdown("### Enter Customer Details")
+            c_pid = st.text_input("Product ID", key="cust_pid")
+            c_id = st.text_input("Customer ID", key="cust_id")
+            c_name = st.text_input("Customer Name", value=st.session_state.user.get("name",""), key="cust_name")
+            c_phone = st.text_input("Phone Number", key="cust_phone")
+            c_email = st.text_input("Email", key="cust_email")
+            c_address = st.text_area("Address", key="cust_address")
+            c_payment = st.selectbox("Payment Method", ["UPI","Credit Card","Cash on Delivery"], key="cust_payment")
+            c_status = st.selectbox("Delivery Status", ["Delivered","Returned","Pending"], key="cust_status")
+
+            if st.button("Submit Customer Details", key="cust_submit_btn"):
+                if not (c_pid.strip() and c_id.strip() and c_name.strip()):
+                    st.error("Product ID, Customer ID and Name are required.")
+                else:
+                    details = {
+                        "customer_id": c_id.strip(),
+                        "customer_name": c_name.strip(),
+                        "phone": c_phone.strip(),
+                        "email": c_email.strip(),
+                        "address": c_address.strip()
+                    }
+                    bc.add_block(c_pid.strip(), "Customer", c_name.strip(), c_address.strip() or "Unknown",
+                                 c_status, c_payment, details)
+                    st.success(f"Customer details saved for Product {c_pid}")
+
+    # ---------------- View Journey & Summary ----------------
+    with view_col:
+        st.subheader("🔎 View Product Journey")
+        search_pid = st.text_input("Product ID to view journey", key="view_pid")
+        if st.button("View Journey", key="view_btn"):
+            journey = bc.get_product_journey(search_pid.strip())
+            if not journey:
+                st.warning("No data found.")
+            else:
+                for b in journey:
+                    st.markdown(f"**Block {b['index']} — {b['actor_role']} ({b['actor_name']})**")
+                    st.write(f"- Timestamp: {b['timestamp']}")
+                    st.write(f"- Location:
